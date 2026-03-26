@@ -7,7 +7,6 @@ See also: [`EuropeanOption`](@ref), [`AmericanOption`](@ref)
 """
 abstract type VanillaOption end
 
-
 """
     EuropeanOption <: VanillaOption
 
@@ -16,7 +15,6 @@ Abstract type for European-style options that can only be exercised at expiratio
 See also: [`EuropeanCall`](@ref), [`EuropeanPut`](@ref)
 """
 abstract type EuropeanOption <: VanillaOption end
-
 
 """
     AmericanOption <: VanillaOption
@@ -62,7 +60,7 @@ end
 
 Base.broadcastable(x::EuropeanCall) = Ref(x)
 
-function payoff(option::EuropeanCall, spot::AbstractFloat)
+function payoff(option::EuropeanCall, spot)
     return max(0.0, spot - option.strike)
 end
 
@@ -121,6 +119,73 @@ payoff(put, 90.0)    # Returns 10.0
 payoff(put, 110.0)   # Returns 0.0
 ```
 """
-function payoff(option::EuropeanPut, spot::AbstractFloat)
+function payoff(option::EuropeanPut, spot)
     return max.(0.0, option.strike - spot)
+end
+
+
+## American Options
+
+"""
+    AmericanCall(strike, expiry)
+
+An American call option that can be exercised at any time up to and including expiration.
+
+# Fields
+- `strike::AbstractFloat`: Strike price (exercise price)
+- `expiry::AbstractFloat`: Time to expiration in years
+
+# Notes
+For non-dividend paying stocks, American calls have the same value as European calls
+since early exercise is never optimal.
+
+# Examples
+```julia
+call = AmericanCall(100.0, 1.0)
+```
+
+See also: [`AmericanPut`](@ref), [`EuropeanCall`](@ref)
+"""
+struct AmericanCall <: AmericanOption
+    strike::AbstractFloat
+    expiry::AbstractFloat
+end
+
+Base.broadcastable(x::AmericanCall) = Ref(x)
+
+function payoff(option::AmericanCall, spot)
+    return max(0.0, spot - option.strike)
+end
+
+
+"""
+    AmericanPut(strike, expiry)
+
+An American put option that can be exercised at any time up to and including expiration.
+
+# Fields
+- `strike::AbstractFloat`: Strike price (exercise price)
+- `expiry::AbstractFloat`: Time to expiration in years
+
+# Notes
+American puts always trade at a premium to European puts due to the early exercise feature.
+This early exercise option is particularly valuable when interest rates are high or
+the option is deep in-the-money.
+
+# Examples
+```julia
+put = AmericanPut(100.0, 1.0)
+```
+
+See also: [`AmericanCall`](@ref), [`EuropeanPut`](@ref)
+"""
+struct AmericanPut <: AmericanOption
+    strike::AbstractFloat
+    expiry::AbstractFloat
+end
+
+Base.broadcastable(x::AmericanPut) = Ref(x)
+
+function payoff(option::AmericanPut, spot)
+    return max(0.0, option.strike - spot)
 end

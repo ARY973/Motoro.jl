@@ -5,10 +5,10 @@ include("options.jl")
 include("models.jl")
 
 export VanillaOption, EuropeanOption, AmericanOption
-export EuropeanCall, EuropeanPut
+export EuropeanCall, EuropeanPut, AmericanCall, AmericanPut
 export payoff
 
-export Binomial, price
+export Binomial, BlackScholes, MonteCarlo, asset_paths, price
 
 export MarketData
 
