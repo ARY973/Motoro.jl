@@ -162,10 +162,28 @@ paths = asset_paths(engine, 100.0, 0.05, 0.2, 1.0)
 
 See also: [`asset_paths`](@ref), [`asset_paths_col`](@ref), [`plot_paths`](@ref)
 """
+
+abstract type VarianceReductionMethod end 
+
+struct Naive <: VarianceReductionMethod end 
+
+struct Antithetic <: VarianceReductionMethod end 
+
+struct Stratified <: VarianceReductionMethod end
+
+struct AntiStrat <: VarianceReductionMethod end
+
 struct MonteCarlo
     steps::Int
     reps::Int
+    method::VarianceReductionMethod
 end
+
+MonteCarlo(steps::Int, reps::Int, ::Type{Naive}) = MonteCarlo(steps, reps, Naive())
+MonteCarlo(steps::Int, reps::Int, ::Type{Antithetic}) = MonteCarlo(steps, reps, Antithetic())
+MonteCarlo(steps::Int, reps::Int, ::Type{Stratified}) = MonteCarlo(steps, reps, Stratified())
+MonteCarlo(steps::Int, reps::Int, ::Type{AntiStrat}) = MonteCarlo(steps, reps, AntiStrat())
+
 
 """
     asset_paths(model::MonteCarlo, spot, rate, vol, expiry)
@@ -193,7 +211,7 @@ size(paths)  # (1000, 101)
 
 See also: [`asset_paths_col`](@ref), [`asset_paths_ax`](@ref)
 """
-function asset_paths(model::MonteCarlo, spot, rate, vol, expiry)
+function asset_paths(method::Naive, model::MonteCarlo, spot, rate, vol, expiry)
     (; steps, reps) = model 
 
     dt = expiry / steps
@@ -214,12 +232,74 @@ function asset_paths(model::MonteCarlo, spot, rate, vol, expiry)
 end
 
 
+function asset_paths(method::Antithetic, model::MonteCarlo, spot, rate, vol, expiry)
+    (; steps, reps) = model
+
+    dt = expiry / steps
+    nudt = (rate - 0.5 * vol^2) * dt
+    sidt = vol * sqrt(dt)
+    half = reps ÷ 2
+    paths = zeros(reps, steps + 1)
+    paths[:, 1] .= spot
+
+    @inbounds for i in 1:half
+        @inbounds for j in 2:steps+1
+            z = randn()
+            paths[i, j]        = paths[i, j-1]        * exp(nudt + sidt * z)
+            paths[i + half, j] = paths[i + half, j-1] * exp(nudt + sidt * (-z))
+        end
+    end
+
+    return paths
+end
+
+function asset_paths(method::Stratified, model::MonteCarlo, spot, rate, vol, expiry)
+    (; steps, reps) = model
+
+    dt = expiry / steps
+    nudt = (rate - 0.5 * vol^2) * dt
+    sidt = vol * sqrt(dt)
+    paths = zeros(reps, steps + 1)
+    paths[:, 1] .= spot
+    d = Normal()
+    u = rand(reps)
+
+    @inbounds for i in 1:reps
+        z = quantile(d, (i - 1 + u[i]) / reps)
+        paths[i, end] = spot * exp(nudt + sidt * z)
+    end
+
+    return paths
+end
+
+function asset_paths(method::AntiStrat, model::MonteCarlo, spot, rate, vol, expiry)
+    (; steps, reps) = model
+
+    dt = expiry / steps
+    nudt = (rate - 0.5 * vol^2) * dt
+    sidt = vol * sqrt(dt)
+    half = reps ÷ 2
+    paths = zeros(reps, steps + 1)
+    paths[:, 1] .= spot
+    d = Normal()
+    u = rand(half)
+
+    @inbounds for i in 1:half
+        z = quantile(d, (i - 1 + u[i]) / half)
+        paths[i, end]        = spot * exp(nudt + sidt * z)
+        paths[i + half, end] = spot * exp(nudt + sidt * (-z))
+    end
+
+    return paths
+end
+
+
 function price(option::EuropeanOption, engine::MonteCarlo, data::MarketData)
     (; strike, expiry) = option
     (; spot, rate, vol) = data
     (; steps, reps) = engine
 
-    paths = asset_paths(engine, spot, rate, vol, expiry)
+    paths = asset_paths(engine.method, engine, spot, rate, vol, expiry)
     payoffs = payoff.(option, paths[:, end])
 
     return exp(-rate * expiry) * mean(payoffs)
