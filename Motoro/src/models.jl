@@ -325,12 +325,25 @@ struct VarianceReduction{D<:DrawMethod, P<:PairingMethod} <: VarianceReductionMe
 end
 
 """
-    MonteCarlo(steps, reps[, method])
+    MonteCarlo
 
-Monte Carlo simulation model for European option pricing.
+Abstract type for all Monte Carlo simulation models.
 
-Generates random asset price paths via geometric Brownian motion and returns
-the discounted expected payoff.
+Concrete subtypes differ in the pricing measure and hedging strategy used:
+- [`RiskNeutralMonteCarlo`](@ref): standard discounted expected payoff under the Q measure
+- [`HedgedMonteCarlo`](@ref): real-world hedge cost simulation under the P measure
+
+See also: [`RiskNeutralMonteCarlo`](@ref), [`HedgedMonteCarlo`](@ref)
+"""
+abstract type MonteCarlo end
+
+"""
+    RiskNeutralMonteCarlo(steps, reps[, method])
+
+Monte Carlo simulation model for pricing options under the risk-neutral (Q) measure.
+
+Generates asset price paths via geometric Brownian motion using the risk-free rate
+as the drift and returns the discounted expected payoff.
 
 # Fields
 - `steps::Int`: Number of time steps per simulation path
@@ -342,25 +355,62 @@ the discounted expected payoff.
 data = MarketData(41.0, 0.08, 0.30, 0.0)
 call = EuropeanCall(40.0, 1.0)
 
-# Default (pseudo-random, no pairing)
-price(call, MonteCarlo(100, 10_000), data)
-
-# Antithetic variates
-price(call, MonteCarlo(100, 10_000, VarianceReduction(PseudoRandom(), Antithetic())), data)
-
-# Stratified sampling
-price(call, MonteCarlo(100, 10_000, VarianceReduction(Stratified(), NoPairing())), data)
+price(call, RiskNeutralMonteCarlo(100, 10_000), data)
+price(call, RiskNeutralMonteCarlo(100, 10_000, VarianceReduction(PseudoRandom(), Antithetic())), data)
+price(call, RiskNeutralMonteCarlo(100, 10_000, VarianceReduction(Stratified(), NoPairing())), data)
 ```
 
-See also: [`asset_paths`](@ref), [`VarianceReduction`](@ref)
+See also: [`MonteCarlo`](@ref), [`HedgedMonteCarlo`](@ref), [`asset_paths`](@ref)
 """
-struct MonteCarlo
+struct RiskNeutralMonteCarlo <: MonteCarlo
     steps::Int
     reps::Int
     method::VarianceReductionMethod
 end
 
-MonteCarlo(steps::Int, reps::Int) = MonteCarlo(steps, reps, VarianceReduction(PseudoRandom(), NoPairing()))
+RiskNeutralMonteCarlo(steps::Int, reps::Int) = RiskNeutralMonteCarlo(steps, reps, VarianceReduction(PseudoRandom(), NoPairing()))
+
+"""
+    HedgeStrategy
+
+Abstract type for hedging strategies used with [`HedgedMonteCarlo`](@ref).
+
+Concrete subtypes: [`StopLoss`](@ref)
+"""
+abstract type HedgeStrategy end
+
+"""
+    HedgedMonteCarlo(steps, reps, strategy[, method])
+
+Monte Carlo simulation model for estimating the cost of a hedging strategy under
+the real-world (P) measure. Asset paths are simulated using the strategy's drift
+rather than the risk-free rate.
+
+# Fields
+- `steps::Int`: Number of time steps per simulation path
+- `reps::Int`: Number of simulation paths (replications)
+- `method::VarianceReductionMethod`: Variance reduction strategy (default: `PseudoRandom` with `NoPairing`)
+- `strategy::HedgeStrategy`: The hedging strategy to evaluate (e.g., [`StopLoss`](@ref))
+
+# Examples
+```julia
+data = MarketData(41.0, 0.08, 0.30, 0.0)
+call = EuropeanCall(40.0, 1.0)
+
+price(call, HedgedMonteCarlo(100, 10_000, StopLoss(0.10)), data)
+```
+
+See also: [`MonteCarlo`](@ref), [`RiskNeutralMonteCarlo`](@ref), [`HedgeStrategy`](@ref), [`StopLoss`](@ref)
+"""
+struct HedgedMonteCarlo{S<:HedgeStrategy} <: MonteCarlo
+    steps::Int
+    reps::Int
+    method::VarianceReductionMethod
+    strategy::S
+end
+
+HedgedMonteCarlo(steps::Int, reps::Int, strategy::HedgeStrategy) =
+    HedgedMonteCarlo(steps, reps, VarianceReduction(PseudoRandom(), NoPairing()), strategy)
 
 
 function generate_draws(::PseudoRandom, n::Int)
@@ -410,7 +460,7 @@ size(paths)  # (1000, 101)
 
 See also: [`MonteCarlo`](@ref), [`price`](@ref)
 """
-function asset_paths(method::VarianceReduction, model::MonteCarlo, spot, rate, vol, expiry)
+function asset_paths(method::VarianceReduction, model::MonteCarlo, spot, rate, vol, expiry)  # MonteCarlo here is the abstract type
     (; steps, reps) = model
 
     dt = expiry / steps
@@ -431,13 +481,51 @@ function asset_paths(method::VarianceReduction, model::MonteCarlo, spot, rate, v
 end
 
 
-function price(option::EuropeanOption, model::MonteCarlo, data::MarketData)
+function price(option::EuropeanOption, model::RiskNeutralMonteCarlo, data::MarketData)
     (; strike, expiry) = option
     (; spot, rate, vol) = data
-    (; steps, reps) = model
 
     paths = asset_paths(model.method, model, spot, rate, vol, expiry)
     disc_payoffs = exp(-rate * expiry) .* payoff.(option, paths[:, end])
+
+    return SimulationResult(mean(disc_payoffs), std(disc_payoffs) / sqrt(model.reps))
+end
+
+
+"""
+    price(option::ExoticOption, model::MonteCarlo, data::MarketData)
+
+Price a path-dependent exotic option via Monte Carlo simulation.
+
+Each simulated path is passed in full to `payoff`, allowing the payoff to depend
+on the entire price history (e.g., the running maximum, minimum, or average).
+
+# Arguments
+- `option::ExoticOption`: A lookback or Asian option contract
+- `model::MonteCarlo`: Simulation parameters (steps, reps, variance reduction method)
+- `data::MarketData`: Market parameters (spot, rate, vol, div)
+
+# Returns
+A [`SimulationResult`](@ref) with the mean discounted payoff and its standard error.
+
+# Examples
+```julia
+data = MarketData(100.0, 0.05, 0.2, 0.0)
+model = MonteCarlo(252, 10_000)
+
+price(FloatingStrikeLookbackCall(1.0),         model, data)
+price(FloatingPriceLookbackPut(100.0, 1.0),    model, data)
+price(FloatingPriceArithmeticAsianCall(100.0, 1.0), model, data)
+```
+
+See also: [`ExoticOption`](@ref), [`asset_paths`](@ref), [`SimulationResult`](@ref)
+"""
+function price(option::ExoticOption, model::RiskNeutralMonteCarlo, data::MarketData)
+    (; expiry) = option
+    (; spot, rate, vol) = data
+
+    paths = asset_paths(model.method, model, spot, rate, vol, expiry)
+    disc_payoffs = exp(-rate * expiry) .* [payoff(option, row) for row in eachrow(paths)]
 
     return SimulationResult(mean(disc_payoffs), std(disc_payoffs) / sqrt(model.reps))
 end
@@ -447,14 +535,11 @@ end
 
 
 """
-    StopLoss(mu)
+    StopLoss(mu) <: HedgeStrategy
 
-Stop-loss hedging strategy for a European option.
-
-Models a naive stop-loss hedge that holds the underlying whenever the spot price is
-at or above the strike and holds cash otherwise. The drift `mu` is used in place of
-the risk-free rate when simulating asset paths, allowing the strategy to be evaluated
-under the real-world (physical) measure.
+Stop-loss hedging strategy. Holds the underlying whenever the spot is at or above
+the strike and holds cash otherwise. The drift `mu` is the real-world (P-measure)
+expected return used when simulating asset paths.
 
 # Fields
 - `mu::Float64`: Expected drift of the underlying asset (annualized, as decimal)
@@ -463,81 +548,75 @@ under the real-world (physical) measure.
 ```julia
 data  = MarketData(41.0, 0.08, 0.30, 0.0)
 call  = EuropeanCall(40.0, 1.0)
-model = MonteCarlo(100, 10_000)
-hedge = StopLoss(0.10)
 
-price(call, model, hedge, data)
+price(call, HedgedMonteCarlo(100, 10_000, StopLoss(0.10)), data)
 ```
 
-See also: [`price`](@ref), [`MonteCarlo`](@ref)
+See also: [`HedgeStrategy`](@ref), [`HedgedMonteCarlo`](@ref)
 """
-struct StopLoss
+struct StopLoss <: HedgeStrategy
     mu::Float64
 end
 
 
 """
-    price(option::EuropeanOption, model::MonteCarlo, hedge::StopLoss, data::MarketData)
+    price(option::EuropeanOption, model::HedgedMonteCarlo{StopLoss}, data::MarketData)
 
 Estimate the cost of a stop-loss hedging strategy for a European option via Monte Carlo.
 
-Simulates asset paths under the drift `hedge.mu` and tracks the cash flows of a
-stop-loss hedge: buying the underlying when the spot crosses above the strike and
-selling when it crosses below. The present value of all cash flows (including
-terminal delivery) is averaged across paths.
+Simulates asset paths under the real-world drift `model.strategy.mu` and tracks the
+cash flows of a stop-loss hedge: buying the underlying when the spot crosses above the
+strike and selling when it crosses below. The present value of all cash flows
+(including terminal delivery) is averaged across paths.
 
 # Arguments
 - `option::EuropeanOption`: The option contract being hedged
-- `model::MonteCarlo`: Simulation parameters (steps, reps, variance reduction method)
-- `hedge::StopLoss`: Stop-loss strategy specifying the asset drift
+- `model::HedgedMonteCarlo{StopLoss}`: Simulation model with stop-loss strategy
 - `data::MarketData`: Market parameters (spot, rate, vol, div)
 
 # Returns
-A [`SimulationResult`](@ref) with the mean hedging cost and its standard error
-(standard deviation of costs divided by √reps).
+A [`SimulationResult`](@ref) with the mean hedging cost and its standard error.
 
 # Examples
 ```julia
 data  = MarketData(41.0, 0.08, 0.30, 0.0)
 call  = EuropeanCall(40.0, 1.0)
-model = MonteCarlo(100, 10_000)
-hedge = StopLoss(0.10)
 
-result = price(call, model, hedge, data)
+result = price(call, HedgedMonteCarlo(100, 10_000, StopLoss(0.10)), data)
 result.price  # mean hedge cost
-result.std    # standard error of the mean estimate
+result.std    # standard error
 ```
 
-See also: [`StopLoss`](@ref), [`MonteCarlo`](@ref), [`SimulationResult`](@ref)
+See also: [`StopLoss`](@ref), [`HedgedMonteCarlo`](@ref), [`SimulationResult`](@ref)
 """
-function price(option::EuropeanOption, model::MonteCarlo, hedge::StopLoss, data::MarketData)
+function price(option::EuropeanOption, model::HedgedMonteCarlo{StopLoss}, data::MarketData)
     (; strike, expiry) = option
-    (; steps, reps, method) = model
-    (; mu) = hedge
+    (; steps, reps, method, strategy) = model
+    (; mu) = strategy
     (; spot, rate, vol, div) = data
 
     dt = expiry / steps
     dfs = exp.(-rate * collect(0:1:steps) * dt)
     cost = zeros(reps)
-    paths  = asset_paths(method, model, spot, mu, vol, expiry)
+    paths = asset_paths(method, model, spot, mu, vol, expiry)
 
     for k in 1:reps
-        cash_flows = zeros(steps+1)
+        cash_flows = zeros(steps + 1)
 
-        if paths[k,1] >= strike
+        if paths[k, 1] >= strike
             covered = 1
-            cash_flows[1] = -paths[k,1]
+            cash_flows[1] = -paths[k, 1]
         else
             covered = 0
         end
 
         for t in 2:steps+1
-            if (covered == 1) & (paths[k,t] < strike)
+            if (covered == 1) & (paths[k, t] < strike)
                 covered = 0
-                cash_flows[t] = paths[k,t]
-            elseif (covered == 0) & (paths[k,t] > strike)
+                cash_flows[t] = paths[k, t]
+            elseif (covered == 0) & (paths[k, t] > strike)
                 covered = 1
-                cash_flows[t] = -paths[k,t]
+                cash_flows[t] = -paths[k, t]
             end
         end
 
@@ -549,5 +628,4 @@ function price(option::EuropeanOption, model::MonteCarlo, hedge::StopLoss, data:
     end
 
     return SimulationResult(mean(cost), std(cost) / sqrt(reps))
-
 end
