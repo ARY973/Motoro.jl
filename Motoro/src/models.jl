@@ -395,7 +395,7 @@ function price(option::EuropeanOption, model::MonteCarlo, data::MarketData)
     paths = asset_paths(model.method, model, spot, rate, vol, expiry)
     disc_payoffs = exp(-rate * expiry) .* payoff.(option, paths[:, end])
 
-    return SimulationResult(mean(disc_payoffs), std(disc_payoffs))
+    return SimulationResult(mean(disc_payoffs), std(disc_payoffs) / sqrt(model.reps))
 end
 
 
