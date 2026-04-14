@@ -53,9 +53,9 @@ call = EuropeanCall(110.0, 0.5)
 
 See also: [`EuropeanPut`](@ref), [`payoff`](@ref)
 """
-struct EuropeanCall <: EuropeanOption
-    strike::AbstractFloat
-    expiry::AbstractFloat
+struct EuropeanCall{T<:AbstractFloat} <: EuropeanOption
+    strike::T
+    expiry::T
 end
 
 Base.broadcastable(x::EuropeanCall) = Ref(x)
@@ -90,9 +90,9 @@ put = EuropeanPut(110.0, 0.5)
 
 See also: [`EuropeanCall`](@ref), [`payoff`](@ref)
 """
-struct EuropeanPut <: EuropeanOption
-    strike::AbstractFloat
-    expiry::AbstractFloat
+struct EuropeanPut{T<:AbstractFloat} <: EuropeanOption
+    strike::T
+    expiry::T
 end
 
 Base.broadcastable(x::EuropeanPut) = Ref(x)
@@ -149,9 +149,9 @@ call = AmericanCall(100.0, 1.0)
 
 See also: [`AmericanPut`](@ref), [`EuropeanCall`](@ref)
 """
-struct AmericanCall <: AmericanOption
-    strike::AbstractFloat
-    expiry::AbstractFloat
+struct AmericanCall{T<:AbstractFloat} <: AmericanOption
+    strike::T
+    expiry::T
 end
 
 Base.broadcastable(x::AmericanCall) = Ref(x)
@@ -182,9 +182,9 @@ put = AmericanPut(100.0, 1.0)
 
 See also: [`AmericanCall`](@ref), [`EuropeanPut`](@ref)
 """
-struct AmericanPut <: AmericanOption
-    strike::AbstractFloat
-    expiry::AbstractFloat
+struct AmericanPut{T<:AbstractFloat} <: AmericanOption
+    strike::T
+    expiry::T
 end
 
 Base.broadcastable(x::AmericanPut) = Ref(x)
