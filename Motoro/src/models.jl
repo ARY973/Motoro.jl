@@ -29,7 +29,7 @@ end
 """
     SimulationResult(price, std)
 
-Result from a simulation-based pricing model (e.g., [`MonteCarlo`](@ref)).
+Result from a simulation-based pricing model (e.g., [`RiskNeutralMonteCarlo`](@ref), [`HedgedMonteCarlo`](@ref)).
 
 # Fields
 - `price::Float64`: Estimated option price (discounted mean payoff)
@@ -305,7 +305,7 @@ struct Antithetic <: PairingMethod end
     VarianceReduction{D<:DrawMethod, P<:PairingMethod}(draw, pairing)
 
 Combines a draw method and a pairing method into a variance reduction strategy
-for use with [`MonteCarlo`](@ref).
+for use with [`RiskNeutralMonteCarlo`](@ref) or [`HedgedMonteCarlo`](@ref).
 
 # Fields
 - `draw::DrawMethod`: How to generate random draws ([`PseudoRandom`](@ref) or [`Stratified`](@ref))
@@ -438,11 +438,13 @@ end
 
 Generate simulated asset price paths using geometric Brownian motion.
 
+Works with any [`MonteCarlo`](@ref) subtype (`RiskNeutralMonteCarlo` or `HedgedMonteCarlo`).
+
 # Arguments
 - `method::VarianceReduction`: Variance reduction strategy controlling draw generation and pairing
-- `model::MonteCarlo`: Monte Carlo model (provides `steps` and `reps`)
+- `model::MonteCarlo`: Any Monte Carlo model (provides `steps` and `reps`)
 - `spot`: Initial asset price
-- `rate`: Risk-free interest rate (annualized)
+- `rate`: Drift rate (risk-free rate for risk-neutral pricing; real-world drift for hedging)
 - `vol`: Volatility (annualized)
 - `expiry`: Time to expiration in years
 
@@ -452,15 +454,15 @@ column 1 is the initial spot price and column `steps+1` is the terminal price.
 
 # Examples
 ```julia
-data   = MarketData(41.0, 0.08, 0.30, 0.0)
-model = MonteCarlo(100, 1_000)
-paths  = asset_paths(model.method, model, data.spot, data.rate, data.vol, 1.0)
+data  = MarketData(41.0, 0.08, 0.30, 0.0)
+model = RiskNeutralMonteCarlo(100, 1_000)
+paths = asset_paths(model.method, model, data.spot, data.rate, data.vol, 1.0)
 size(paths)  # (1000, 101)
 ```
 
-See also: [`MonteCarlo`](@ref), [`price`](@ref)
+See also: [`RiskNeutralMonteCarlo`](@ref), [`HedgedMonteCarlo`](@ref), [`price`](@ref)
 """
-function asset_paths(method::VarianceReduction, model::MonteCarlo, spot, rate, vol, expiry)  # MonteCarlo here is the abstract type
+function asset_paths(method::VarianceReduction, model::MonteCarlo, spot, rate, vol, expiry)
     (; steps, reps) = model
 
     dt = expiry / steps
@@ -493,7 +495,7 @@ end
 
 
 """
-    price(option::ExoticOption, model::MonteCarlo, data::MarketData)
+    price(option::ExoticOption, model::RiskNeutralMonteCarlo, data::MarketData)
 
 Price a path-dependent exotic option via Monte Carlo simulation.
 
@@ -502,7 +504,7 @@ on the entire price history (e.g., the running maximum, minimum, or average).
 
 # Arguments
 - `option::ExoticOption`: A lookback or Asian option contract
-- `model::MonteCarlo`: Simulation parameters (steps, reps, variance reduction method)
+- `model::RiskNeutralMonteCarlo`: Simulation parameters (steps, reps, variance reduction method)
 - `data::MarketData`: Market parameters (spot, rate, vol, div)
 
 # Returns
@@ -510,11 +512,11 @@ A [`SimulationResult`](@ref) with the mean discounted payoff and its standard er
 
 # Examples
 ```julia
-data = MarketData(100.0, 0.05, 0.2, 0.0)
-model = MonteCarlo(252, 10_000)
+data  = MarketData(100.0, 0.05, 0.2, 0.0)
+model = RiskNeutralMonteCarlo(252, 10_000)
 
-price(FloatingStrikeLookbackCall(1.0),         model, data)
-price(FloatingPriceLookbackPut(100.0, 1.0),    model, data)
+price(FloatingStrikeLookbackCall(1.0),              model, data)
+price(FloatingPriceLookbackPut(100.0, 1.0),         model, data)
 price(FloatingPriceArithmeticAsianCall(100.0, 1.0), model, data)
 ```
 

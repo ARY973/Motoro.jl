@@ -1,6 +1,8 @@
 # Motoro.jl
 
-A Julia package for teaching computational options pricing. Motoro implements three classical pricing methods — binomial trees, Black-Scholes-Merton, and Monte Carlo simulation — with a focus on clarity and pedagogical value.
+A Julia package for teaching computational options pricing. Motoro implements classical
+pricing methods — binomial trees, Black-Scholes-Merton, and Monte Carlo simulation —
+alongside exotic options and hedging strategies, with a focus on clarity and pedagogical value.
 
 ## Installation
 
@@ -40,8 +42,8 @@ Exact closed-form solution for European options under the BSM assumptions.
 
 ```julia
 bsm = BlackScholes()
-price(call, bsm, data)   # ≈ 9.96
-price(put, bsm, data)    # ≈ 2.89
+price(call, bsm, data)   # ≈ 6.96
+price(put,  bsm, data)   # ≈ 2.89
 ```
 
 ### Binomial Tree (CRR)
@@ -63,16 +65,20 @@ Increase `steps` for higher accuracy; the binomial price converges to BSM as `st
 
 ### Monte Carlo
 
-Simulates asset paths via geometric Brownian motion and averages discounted payoffs.
+Motoro has two Monte Carlo model types, both subtypes of the abstract `MonteCarlo`:
+
+#### `RiskNeutralMonteCarlo` — standard option pricing
+
+Simulates asset paths under the risk-neutral (Q) measure and averages discounted payoffs.
 
 ```julia
-mc = MonteCarlo(100, 10_000)   # 100 steps, 10,000 paths
+mc = RiskNeutralMonteCarlo(100, 10_000)   # 100 steps, 10,000 paths
 price(call, mc, data)
 ```
 
 #### Variance Reduction
 
-Motoro includes two variance reduction techniques that can be combined:
+Both Monte Carlo types accept an optional `VarianceReduction` argument:
 
 | Draw method  | Pairing method | Effect |
 |---|---|---|
@@ -83,12 +89,81 @@ Motoro includes two variance reduction techniques that can be combined:
 
 ```julia
 # Antithetic variates
-mc_anti = MonteCarlo(100, 10_000, VarianceReduction(PseudoRandom(), Antithetic()))
+mc_anti = RiskNeutralMonteCarlo(100, 10_000, VarianceReduction(PseudoRandom(), Antithetic()))
 price(call, mc_anti, data)
 
 # Stratified sampling
-mc_strat = MonteCarlo(100, 10_000, VarianceReduction(Stratified(), NoPairing()))
+mc_strat = RiskNeutralMonteCarlo(100, 10_000, VarianceReduction(Stratified(), NoPairing()))
 price(call, mc_strat, data)
+```
+
+## Exotic Options
+
+Exotic options are path-dependent and priced via `RiskNeutralMonteCarlo`.
+
+### Lookback Options
+
+Payoffs depend on the maximum or minimum asset price over the life of the contract.
+
+| Type | Fields | Payoff |
+|---|---|---|
+| `FloatingStrikeLookbackCall` | `expiry` | `S_T - S_min` |
+| `FloatingStrikeLookbackPut`  | `expiry` | `S_max - S_T` |
+| `FloatingPriceLookbackCall`  | `strike, expiry` | `max(0, S_max - K)` |
+| `FloatingPriceLookbackPut`   | `strike, expiry` | `max(0, K - S_min)` |
+
+```julia
+mc = RiskNeutralMonteCarlo(252, 50_000)
+
+price(FloatingStrikeLookbackCall(1.0),          mc, data)
+price(FloatingStrikeLookbackPut(1.0),           mc, data)
+price(FloatingPriceLookbackCall(40.0, 1.0),     mc, data)
+price(FloatingPriceLookbackPut(40.0, 1.0),      mc, data)
+```
+
+### Arithmetic Asian Options
+
+Payoffs depend on the arithmetic mean of the asset price over the life of the contract.
+
+| Type | Fields | Payoff |
+|---|---|---|
+| `FloatingStrikeArithmeticAsianCall` | `expiry` | `max(0, S_T - Ā)` |
+| `FloatingStrikeArithmeticAsianPut`  | `expiry` | `max(0, Ā - S_T)` |
+| `FloatingPriceArithmeticAsianCall`  | `strike, expiry` | `max(0, Ā - K)` |
+| `FloatingPriceArithmeticAsianPut`   | `strike, expiry` | `max(0, K - Ā)` |
+
+```julia
+mc = RiskNeutralMonteCarlo(252, 50_000)
+
+price(FloatingStrikeArithmeticAsianCall(1.0),          mc, data)
+price(FloatingStrikeArithmeticAsianPut(1.0),           mc, data)
+price(FloatingPriceArithmeticAsianCall(40.0, 1.0),     mc, data)
+price(FloatingPriceArithmeticAsianPut(40.0, 1.0),      mc, data)
+```
+
+## Hedging Strategies
+
+`HedgedMonteCarlo` simulates hedge costs under the real-world (P) measure. It takes
+a `HedgeStrategy` that specifies the strategy and its real-world drift `mu`.
+
+### Stop-Loss Hedge
+
+A naive strategy that holds the underlying whenever the spot is above the strike and
+holds cash otherwise. As `steps → ∞` the hedge cost converges to the BSM price,
+regardless of the real-world drift — illustrating that hedging cost is measure-independent.
+
+```julia
+model = HedgedMonteCarlo(100, 50_000, StopLoss(0.10))   # mu = 10%
+result = price(call, model, data)
+result.price   # mean hedge cost
+result.std     # standard error
+```
+
+Variance reduction works here too — pass the `VarianceReduction` before the strategy:
+
+```julia
+model = HedgedMonteCarlo(100, 50_000, VarianceReduction(PseudoRandom(), Antithetic()), StopLoss(0.10))
+price(call, model, data)
 ```
 
 ## Type Hierarchy
@@ -101,16 +176,43 @@ VanillaOption
 └── AmericanOption
     ├── AmericanCall(strike, expiry)
     └── AmericanPut(strike, expiry)
+
+ExoticOption
+├── LookbackOption
+│   ├── FloatingStrikeLookbackCall(expiry)
+│   ├── FloatingStrikeLookbackPut(expiry)
+│   ├── FloatingPriceLookbackCall(strike, expiry)
+│   └── FloatingPriceLookbackPut(strike, expiry)
+└── ArithmeticAsianOption
+    ├── FloatingStrikeArithmeticAsianCall(expiry)
+    ├── FloatingStrikeArithmeticAsianPut(expiry)
+    ├── FloatingPriceArithmeticAsianCall(strike, expiry)
+    └── FloatingPriceArithmeticAsianPut(strike, expiry)
+
+MonteCarlo (abstract)
+├── RiskNeutralMonteCarlo(steps, reps[, method])
+└── HedgedMonteCarlo(steps, reps, strategy[, method])
+
+HedgeStrategy (abstract)
+└── StopLoss(mu)
 ```
 
 ## Payoff Function
 
-`payoff(option, spot)` computes the intrinsic value of an option at any spot price:
+`payoff(option, spot)` computes the intrinsic value of a vanilla option at any spot price:
 
 ```julia
 payoff(EuropeanCall(100.0, 1.0), 110.0)   # 10.0
 payoff(EuropeanPut(100.0, 1.0),   90.0)   # 10.0
 payoff(EuropeanPut(100.0, 1.0),  110.0)   #  0.0
+```
+
+`payoff(option, path)` computes the payoff of an exotic option from a full price path:
+
+```julia
+path = [100.0, 95.0, 102.0, 98.0, 105.0]
+payoff(FloatingStrikeLookbackCall(1.0), path)   # 105.0 - 95.0 = 10.0
+payoff(FloatingPriceLookbackPut(100.0, 1.0), path)   # max(0, 100.0 - 95.0) = 5.0
 ```
 
 ## Dependencies
